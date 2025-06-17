@@ -28,7 +28,7 @@ final relatoriosProvider = FutureProvider.family<RelatorioFinanceiro,
     ({DateTime dataInicio, DateTime dataFim})>((ref, params) async {
   final supabase = Supabase.instance.client;
 
-  // Buscar contas a receber
+  // Buscar contas a receber  vv
   final List<dynamic> contasReceberRaw = await supabase
       .from('contas_receber')
       .select()
