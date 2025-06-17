@@ -68,54 +68,169 @@ class _ContasReceberPageState extends ConsumerState<ContasReceberPage> {
   }
 
   void _parseAndFillForm(String scannedText) {
-    // Lógica de parsing para extrair dados do texto
-    // Implementaremos isso no próximo passo (Passo 4)
+    debugPrint('Texto Escaneado Completo: \n$scannedText');
 
-    // Exemplo básico (você precisará refinar isso)
-    // Para fins de demonstração, preenchemos com valores fixos ou extraídos de forma simplificada.
-    // Você precisará de regex mais robustos para casos reais.
-
-    // Tenta extrair o valor (ex: TOTAL R$ 125,90)
+    // Tenta extrair o valor (mais robusto, foca em R$ e números com vírgula/ponto)
+    // Prioriza "TOTAL R$ X.XX" ou "R$ X.XX" no final do texto
     RegExp valorRegex = RegExp(
-        r'(?:TOTAL|VALOR|Total a Pagar)[^\d]*R\$\s*([\d,\.]+)',
-        caseSensitive: false);
-    Match? valorMatch = valorRegex.firstMatch(scannedText);
+      r'(?:TOTAL|SUBTOTAL|VALOR TOTAL|VALOR A PAGAR)?\s*R\$?\s*(\d{1,3}(?:[.,]\d{3})*(?:,\d{2})|\d+(?:,\d{2}))',
+      caseSensitive: false,
+      multiLine: true,
+    );
+
+    Match? valorMatch;
+    // Try to find the total from the last relevant lines (TOTAL or payment line)
+    final relevantLines = scannedText
+        .split('\n')
+        .where((line) =>
+            line.trim().isNotEmpty &&
+            (line.toLowerCase().contains('total') ||
+                line.toLowerCase().contains('dinheiro') ||
+                line.toLowerCase().contains('pix')))
+        .toList();
+
+    if (relevantLines.isNotEmpty) {
+      for (String line in relevantLines.reversed) {
+        valorMatch = valorRegex.firstMatch(line);
+        if (valorMatch != null) break;
+      }
+    }
+
     if (valorMatch != null && valorMatch.group(1) != null) {
       String valorStr = valorMatch.group(1)!;
       valorStr = valorStr.replaceAll('.', '').replaceAll(
-          ',', '.'); // Remove separadores de milhar e troca vírgula por ponto
-      _valorController.text = double.parse(valorStr)
-          .toStringAsFixed(2); // Formata para 2 casas decimais
+          ',', '.'); // Handle both . and , as decimal separators, convert to .
+      _valorController.text = double.parse(valorStr).toStringAsFixed(2);
+    } else {
+      // Fallback if the strict regex doesn't match, try to find any number that looks like a monetary value
+      RegExp fallbackValorRegex =
+          RegExp(r'\b\d{1,3}(?:[.,]\d{3})*(?:,\d{2})\b|\b\d+(?:,\d{2})\b');
+      Match? fallbackValorMatch;
+      for (final m
+          in fallbackValorRegex.allMatches(scannedText).toList().reversed) {
+        String val = m.group(0)!;
+        // Heuristic: avoid dates, prefer values with two decimal places
+        if (!val.contains('/') &&
+            !val.contains('-') &&
+            (val.contains(',') && val.split(',')[1].length == 2)) {
+          fallbackValorMatch = m;
+          break; // Found the last valid match, exit loop
+        }
+      }
+
+      if (fallbackValorMatch != null && fallbackValorMatch.group(0) != null) {
+        String valorStr = fallbackValorMatch.group(0)!;
+        valorStr = valorStr.replaceAll('.', '').replaceAll(',', '.');
+        _valorController.text = double.parse(valorStr).toStringAsFixed(2);
+      }
     }
 
-    // Tenta extrair a data (ex: Data: 17/06/2025)
+    // Tenta extrair a data (mais robusto para dd/mm/yyyy ou dd.mm.yyyy ou dd-mm-yyyy)
     RegExp dataRegex = RegExp(
-        r'(?:Data|Dt|Data da venda)[:\s]*(\d{2}[/\-]\d{2}[/\-]\d{4})',
-        caseSensitive: false);
+      r'(\d{2}[/.-]\d{2}[/.-]\d{2,4})', // dd/mm/yy or dd/mm/yyyy
+      caseSensitive: false,
+      multiLine: true,
+    );
     Match? dataMatch = dataRegex.firstMatch(scannedText);
     if (dataMatch != null && dataMatch.group(1) != null) {
       try {
-        _dataRecebimento = DateFormat('dd/MM/yyyy')
-            .parse(dataMatch.group(1)!.replaceAll('-', '/'));
+        String dateString =
+            dataMatch.group(1)!.replaceAll('.', '/').replaceAll('-', '/');
+        // Lida com ano de dois dígitos
+        if (dateString.split('/').last.length == 2) {
+          dateString = dateString.substring(0, dateString.length - 2) +
+              '20' +
+              dateString.substring(dateString.length - 2);
+        }
+        _dataRecebimento = DateFormat('dd/MM/yyyy').parse(dateString);
       } catch (e) {
-        // Fallback ou log de erro se o parsing da data falhar
         debugPrint('Erro ao parsear data: $e');
       }
     }
 
-    // Tenta identificar descrição/contato (palavras-chave)
-    // Esta parte é mais complexa e depende muito dos dados esperados
-    // Por exemplo, podemos procurar por nomes de estabelecimentos conhecidos ou categorias
-    if (scannedText.toLowerCase().contains('supermercado')) {
-      _descricaoController.text = 'Compras de Supermercado';
-    } else if (scannedText.toLowerCase().contains('posto') ||
-        scannedText.toLowerCase().contains('combustível')) {
-      _descricaoController.text = 'Abastecimento';
+    // Tenta extrair forma de pagamento
+    RegExp formaPagamentoRegex = RegExp(
+      r'(?:FORMA DE PAGAMENTO|FORMA PGTO|PAGAMENTO|PAGTO|MODO DE PAGAMENTO)\s*:?\s*(Pix|Dinheiro|Cartão de Crédito|Cartão de Débito|Crédito|Débito|Transf|Transferência|Boleto)',
+      caseSensitive: false,
+      multiLine: true,
+    );
+    Match? formaPagamentoMatch = formaPagamentoRegex.firstMatch(scannedText);
+    if (formaPagamentoMatch != null && formaPagamentoMatch.group(1) != null) {
+      String detectedPaymentMethod =
+          formaPagamentoMatch.group(1)!.toLowerCase();
+      if (detectedPaymentMethod.contains('pix')) {
+        _formaPagamentoController.text = 'Pix';
+      } else if (detectedPaymentMethod.contains('dinheiro')) {
+        _formaPagamentoController.text = 'Dinheiro';
+      } else if (detectedPaymentMethod.contains('crédito') ||
+          detectedPaymentMethod.contains('credito')) {
+        _formaPagamentoController.text = 'Cartão de Crédito';
+      } else if (detectedPaymentMethod.contains('débito') ||
+          detectedPaymentMethod.contains('debito')) {
+        _formaPagamentoController.text = 'Cartão de Débito';
+      } else if (detectedPaymentMethod.contains('transf') ||
+          detectedPaymentMethod.contains('transferência')) {
+        _formaPagamentoController.text = 'Transferência Bancária';
+      } else if (detectedPaymentMethod.contains('boleto')) {
+        _formaPagamentoController.text = 'Boleto';
+      }
+    } else {
+      // Fallback for direct matches like "Dinheiro" or "Pix" without a preceding label, often found near the total
+      if (scannedText.toLowerCase().contains('dinheiro')) {
+        _formaPagamentoController.text = 'Dinheiro';
+      } else if (scannedText.toLowerCase().contains('pix')) {
+        _formaPagamentoController.text = 'Pix';
+      } else if (scannedText.toLowerCase().contains('cartao de credito') ||
+          scannedText.toLowerCase().contains('crédito')) {
+        _formaPagamentoController.text = 'Cartão de Crédito';
+      } else if (scannedText.toLowerCase().contains('cartao de debito') ||
+          scannedText.toLowerCase().contains('débito')) {
+        _formaPagamentoController.text = 'Cartão de Débito';
+      }
     }
-    // Exemplo para contato/cliente (você pode expandir esta lógica)
-    _contatoClienteController.text = ''; // Limpar ou tentar inferir
 
-    setState(() {}); // Atualiza a UI com os dados preenchidos
+    // Tenta extrair a descrição: Prioriza "RAZAO SOCIAL" ou a primeira linha relevante
+    RegExp razaoSocialRegex = RegExp(r'(?:RAZAO SOCIAL|EMPRESA|LOJA)[:\s]*(.+)',
+        caseSensitive: false, multiLine: true);
+    Match? razaoSocialMatch = razaoSocialRegex.firstMatch(scannedText);
+    if (razaoSocialMatch != null && razaoSocialMatch.group(1) != null) {
+      _descricaoController.text = razaoSocialMatch.group(1)!.trim();
+    } else {
+      final lines = scannedText
+          .split('\n')
+          .where((line) => line.trim().isNotEmpty)
+          .toList();
+      if (lines.isNotEmpty) {
+        String potentialDescription = '';
+        // Try to get the first non-numeric, non-date, non-payment-related line
+        for (String line in lines) {
+          if (!valorRegex.hasMatch(line) &&
+              !dataRegex.hasMatch(line) &&
+              !formaPagamentoRegex.hasMatch(line) &&
+              !RegExp(r'^\s*[\d.,]+\s*$').hasMatch(line) &&
+              !line.toLowerCase().contains('cpf') &&
+              !line.toLowerCase().contains('cnpj') &&
+              !line.toLowerCase().contains('cupom fiscal')) {
+            potentialDescription = line.trim();
+            if (potentialDescription.length > 5 &&
+                potentialDescription.length < 50) {
+              // Avoid very short or very long lines as description
+              _descricaoController.text = potentialDescription;
+              break;
+            }
+          }
+        }
+        // If still empty, try the very first non-empty line (e.g., Lojas Renner S.A.)
+        if (_descricaoController.text.isEmpty && lines.isNotEmpty) {
+          _descricaoController.text = lines.first.trim();
+        }
+      }
+    }
+
+    // Limpar ou tentar inferir o contato do cliente - esta parte é muito específica e difícil de generalizar sem mais informações
+    _contatoClienteController.text = '';
+
+    setState(() {});
   }
 
   Future<void> _handleSubmit() async {
